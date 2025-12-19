@@ -273,14 +273,6 @@ def get_weather_forecast_copenhagen(days_ahead: int = 3) -> dict:
 
 
 
-@contextlib.asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Start MCP session manager (needed when mounting into an ASGI app)
-    async with mcp.session_manager.run():
-        yield
-
-
-
 
 
 
