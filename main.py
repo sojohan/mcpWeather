@@ -2,6 +2,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 from fastmcp import FastMCP
 
+# Initialize FastMCP server
 mcp = FastMCP("weather")
 
 # API endpoint
@@ -259,4 +260,39 @@ def get_weather_forecast_copenhagen(days_ahead: int = 3) -> dict:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="sse", host="0.0.0.0", port=8000)
+    import sys
+    import os
+    
+    # SSE transport only - for HTTP/SSE access
+    # Railway sets PORT environment variable automatically
+    # Use: python main.py  (default: 0.0.0.0:8000 or Railway PORT)
+    # Use: python main.py --host 127.0.0.1 --port 9000  (custom host/port)
+    
+    host = "0.0.0.0"
+    # Railway automatically sets PORT environment variable
+    port = int(os.environ.get("PORT", 8000))
+    
+    # Parse optional host and port arguments (only if not set by environment)
+    if "--host" in sys.argv:
+        host_idx = sys.argv.index("--host")
+        if host_idx + 1 < len(sys.argv):
+            host = sys.argv[host_idx + 1]
+    
+    if "--port" in sys.argv:
+        port_idx = sys.argv.index("--port")
+        if port_idx + 1 < len(sys.argv):
+            port = int(sys.argv[port_idx + 1])
+    
+    print(f"Starting MCP server with SSE transport on {host}:{port}")
+    print(f"Access at: http://localhost:{port}")
+    print("(Use 'python main_stdio.py' for stdio transport)")
+    
+    # Debug: Print registered tools (helps diagnose Railway issues)
+    try:
+        if hasattr(mcp, '_tools'):
+            tools = list(mcp._tools.keys())
+            print(f"Registered tools: {tools}")
+    except Exception as e:
+        print(f"Warning: Could not list tools: {e}")
+    
+    mcp.run(transport="sse", host=host, port=port)
