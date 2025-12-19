@@ -353,8 +353,7 @@ async def security_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# Mount MCP Streamable HTTP endpoint at /mcp
-app.mount("/mcp", mcp.streamable_http_app())
+
 
 
 if __name__ == "__main__":
