@@ -1,14 +1,21 @@
 import requests
 from datetime import datetime, timedelta, timezone
-from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.server.fastmcp import FastMCP
 import json
-import asyncio
+import contextlib
 import sys
 import os
+from fastapi import FastAPI, HTTPException, Request
+import uvicorn
 
-# Initialize MCP server
-server = Server("weather")
+# Initialize MCP server with FastMCP
+mcp = FastMCP(
+    "weather",
+    # Recommended for typical HTTP deployments (no per-client server process)
+    stateless_http=True,
+    # Makes certain clients happier by returning JSON when possible
+    json_response=True,
+)
 
 # API endpoint
 URL = "https://opendataapi.dmi.dk/v1/forecastedr/collections/harmonie_dini_sf/position"
@@ -83,7 +90,8 @@ def get_weather_condition(cloud_cover, precipitation, temperature_celsius=None, 
     return "N/A"
 
 
-def get_weather_forecast_impl(
+@mcp.tool()
+def get_weather_forecast(
     latitude: float = 55.6761,
     longitude: float = 12.5683,
     days_ahead: int = 3
@@ -248,173 +256,137 @@ def get_weather_forecast_impl(
     }
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    """List available tools."""
-    return [
-        Tool(
-            name="get_weather_forecast",
-            description="Get weather forecast from DMI API for a specific location",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "latitude": {
-                        "type": "number",
-                        "description": "Latitude of the location (default: 55.6761 for Copenhagen)",
-                        "default": 55.6761
-                    },
-                    "longitude": {
-                        "type": "number",
-                        "description": "Longitude of the location (default: 12.5683 for Copenhagen)",
-                        "default": 12.5683
-                    },
-                    "days_ahead": {
-                        "type": "integer",
-                        "description": "Number of days to forecast ahead (default: 3, max recommended: 5)",
-                        "default": 3
-                    }
-                }
-            }
-        ),
-        Tool(
-            name="get_weather_forecast_copenhagen",
-            description="Get weather forecast for Copenhagen, Denmark",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "days_ahead": {
-                        "type": "integer",
-                        "description": "Number of days to forecast ahead (default: 3, max recommended: 5)",
-                        "default": 3
-                    }
-                }
-            }
-        )
-    ]
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """Handle tool calls."""
-    try:
-        if name == "get_weather_forecast":
-            latitude = arguments.get("latitude", 55.6761)
-            longitude = arguments.get("longitude", 12.5683)
-            days_ahead = arguments.get("days_ahead", 3)
-            
-            result = get_weather_forecast_impl(latitude, longitude, days_ahead)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-        
-        elif name == "get_weather_forecast_copenhagen":
-            days_ahead = arguments.get("days_ahead", 3)
-            
-            result = get_weather_forecast_impl(55.6761, 12.5683, days_ahead)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-        
-        else:
-            return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+@mcp.tool()
+def get_weather_forecast_copenhagen(days_ahead: int = 3) -> dict:
+    """
+    Get weather forecast for Copenhagen, Denmark.
     
-    except Exception as e:
-        import traceback
-        error_msg = f"Error calling tool {name}: {str(e)}\n{traceback.format_exc()}"
-        return [TextContent(type="text", text=json.dumps({"error": error_msg}))]
+    Args:
+        days_ahead: Number of days to forecast ahead (default: 3, max recommended: 5)
+    
+    Returns:
+        Dictionary containing forecast data for Copenhagen
+    """
+    return get_weather_forecast(latitude=55.6761, longitude=12.5683, days_ahead=days_ahead)
+
+def _check_bearer_token(request: Request) -> None:
+    """
+    Optional auth: set MCP_BEARER_TOKEN in Railway variables.
+    If unset, the server runs without auth (not recommended for public deployments).
+    """
+    expected = os.getenv("MCP_BEARER_TOKEN")
+    if not expected:
+        return
+
+    auth = request.headers.get("authorization", "")
+    if auth != f"Bearer {expected}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _validate_origin(request: Request) -> None:
+    """
+    The MCP Streamable HTTP spec recommends validating Origin to mitigate DNS rebinding.
+    Implement a basic allowlist via ALLOWED_ORIGINS (comma-separated), if desired.
+    """
+    allowed = os.getenv("ALLOWED_ORIGINS")
+    if not allowed:
+        return
 
-async def main():
-    """Run the MCP server with SSE transport."""
-    from mcp.server.sse import SseServerTransport
-    from starlette.applications import Starlette
-    from starlette.routing import Route, Mount
-    from starlette.requests import Request
-    from starlette.responses import Response
-    import uvicorn
-    
-    host = "0.0.0.0"
-    port = int(os.environ.get("PORT", 8000))
-    
-    # Parse optional host and port arguments
-    if "--host" in sys.argv:
-        host_idx = sys.argv.index("--host")
-        if host_idx + 1 < len(sys.argv):
-            host = sys.argv[host_idx + 1]
-    
-    if "--port" in sys.argv:
-        port_idx = sys.argv.index("--port")
-        if port_idx + 1 < len(sys.argv):
-            port = int(sys.argv[port_idx + 1])
-    
-    print(f"Starting MCP server with SSE transport on {host}:{port}")
-    print(f"Access at: http://localhost:{port}")
-    print("(Use 'python main_stdio.py' for stdio transport)")
-    
-    # Debug: Print registered tools
+    origin = request.headers.get("origin")
+    if origin is None:
+        return
+
+    allowlist = {o.strip() for o in allowed.split(",") if o.strip()}
+    if origin not in allowlist:
+        raise HTTPException(status_code=403, detail="Origin not allowed")
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start MCP session manager (needed when mounting into an ASGI app)
+    async with mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/")
+def root():
+    """Root endpoint with server info."""
+    # Try to get tool names from FastMCP
     tool_names = []
     try:
-        tools_list = await list_tools()
-        tool_names = [tool.name for tool in tools_list]
-        print(f"Registered tools: {tool_names}")
-    except Exception as e:
-        print(f"Warning: Could not list tools: {e}")
+        if hasattr(mcp, "_tool_manager"):
+            tool_names = list(mcp._tool_manager._tools.keys()) if hasattr(mcp._tool_manager, "_tools") else []
+        elif hasattr(mcp, "list_tools"):
+            # Try to call list_tools synchronously (won't work but shows intent)
+            tool_names = ["get_weather_forecast", "get_weather_forecast_copenhagen"]
+    except:
+        pass
     
-    # Create SSE transport
-    sse_transport = SseServerTransport("/messages/")
+    # Fallback to known tools if we can't access them
+    if not tool_names:
+        tool_names = ["get_weather_forecast", "get_weather_forecast_copenhagen"]
     
-    # Define root/health check handler
-    async def handle_root(request: Request):
-        from starlette.responses import JSONResponse
-        return JSONResponse({
-            "name": "weather",
-            "version": "1.0.0",
-            "transport": "sse",
-            "endpoints": {
-                "sse": "/sse",
-                "messages": "/messages/"
-            },
-            "tools": tool_names
-        })
-    
-    # Define SSE handler
-    async def handle_sse(request: Request):
-        # Note: Must maintain SSE stream - cannot return JSONResponse on error
-        # Errors should be handled by the SSE transport or logged
-        async with sse_transport.connect_sse(
-            request.scope, request.receive, request._send
-        ) as (read_stream, write_stream):
-            await server.run(
-                read_stream, write_stream, server.create_initialization_options()
-            )
-        # Return empty response after SSE connection closes
-        return Response()
-    
-    # Create Starlette app with routes
-    app = Starlette(
-        routes=[
-            Route("/", endpoint=handle_root, methods=["GET"]),
-            Route("/sse", endpoint=handle_sse, methods=["GET"]),
-            Mount("/messages/", app=sse_transport.handle_post_message),
-        ]
-    )
-    
-    # Run with uvicorn
-    config = uvicorn.Config(
-        app, 
-        host=host, 
-        port=port, 
-        log_level="info",
-        access_log=False  # Reduce log noise
-    )
-    server_instance = uvicorn.Server(config)
-    await server_instance.serve()
+    return {
+        "name": "weather",
+        "version": "1.0.0",
+        "transport": "streamable_http",
+        "endpoint": "/mcp",
+        "tools": tool_names
+    }
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    # Only enforce MCP-specific checks on the MCP endpoint
+    if request.url.path.startswith("/mcp"):
+        _validate_origin(request)
+        _check_bearer_token(request)
+    return await call_next(request)
+
+
+# Mount MCP Streamable HTTP endpoint at /mcp
+app.mount("/mcp", mcp.streamable_http_app())
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nServer stopped by user")
-    except Exception as e:
-        print(f"\nERROR: Server failed to start: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
+     host = "0.0.0.0"
+     port = int(os.environ.get("PORT", 8000))
+     mcp.run(transport="sse", host=host, port=port)
+#     
+#     # Parse optional host and port arguments
+#     if "--host" in sys.argv:
+#         host_idx = sys.argv.index("--host")
+#         if host_idx + 1 < len(sys.argv):
+#             host = sys.argv[host_idx + 1]
+#     
+#     if "--port" in sys.argv:
+#         port_idx = sys.argv.index("--port")
+#         if port_idx + 1 < len(sys.argv):
+#             port = int(sys.argv[port_idx + 1])
+#     
+#     print(f"Starting MCP server with StreamableHttp transport on {host}:{port}")
+#     print(f"Access at: http://localhost:{port}")
+#     print(f"MCP endpoint: http://localhost:{port}/mcp")
+#     print("(Use 'python main_stdio.py' for stdio transport)")
+#     
+#     # Debug: Print registered tools
+#     try:
+#         if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
+#             tool_names = list(mcp._tool_manager._tools.keys())
+#         else:
+#             tool_names = ["get_weather_forecast", "get_weather_forecast_copenhagen"]
+#     except:
+#         tool_names = ["get_weather_forecast", "get_weather_forecast_copenhagen"]
+#     print(f"Registered tools: {tool_names}")
+#     
+#     uvicorn.run(app, host=host, port=port, log_level="info")
