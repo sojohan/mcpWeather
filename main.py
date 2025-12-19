@@ -280,9 +280,8 @@ def get_weather_forecast_copenhagen(days_ahead: int = 3) -> dict:
 if __name__ == "__main__":
 
     # SSE transport
-     host = "0.0.0.0"
-     port = int(os.environ.get("PORT", 8000))
-     mcp.run(transport="sse", host=host, port=port)
+    port = int(os.environ.get("PORT", 8000))
+    mcp.run(transport="sse", host="0.0.0.0", port=port)
 
      #mcp.run
 #     
