@@ -1,9 +1,14 @@
 import requests
 from datetime import datetime, timedelta, timezone
-from fastmcp import FastMCP
+from mcp.server import Server
+from mcp.types import Tool, TextContent
+import json
+import asyncio
+import sys
+import os
 
-# Initialize FastMCP server
-mcp = FastMCP("weather")
+# Initialize MCP server
+server = Server("weather")
 
 # API endpoint
 URL = "https://opendataapi.dmi.dk/v1/forecastedr/collections/harmonie_dini_sf/position"
@@ -78,8 +83,7 @@ def get_weather_condition(cloud_cover, precipitation, temperature_celsius=None, 
     return "N/A"
 
 
-@mcp.tool()
-def get_weather_forecast(
+def get_weather_forecast_impl(
     latitude: float = 55.6761,
     longitude: float = 12.5683,
     days_ahead: int = 3
@@ -244,35 +248,92 @@ def get_weather_forecast(
     }
 
 
-@mcp.tool()
-def get_weather_forecast_copenhagen(days_ahead: int = 3) -> dict:
-    """
-    Get weather forecast for Copenhagen, Denmark.
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    """List available tools."""
+    return [
+        Tool(
+            name="get_weather_forecast",
+            description="Get weather forecast from DMI API for a specific location",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "latitude": {
+                        "type": "number",
+                        "description": "Latitude of the location (default: 55.6761 for Copenhagen)",
+                        "default": 55.6761
+                    },
+                    "longitude": {
+                        "type": "number",
+                        "description": "Longitude of the location (default: 12.5683 for Copenhagen)",
+                        "default": 12.5683
+                    },
+                    "days_ahead": {
+                        "type": "integer",
+                        "description": "Number of days to forecast ahead (default: 3, max recommended: 5)",
+                        "default": 3
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="get_weather_forecast_copenhagen",
+            description="Get weather forecast for Copenhagen, Denmark",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "days_ahead": {
+                        "type": "integer",
+                        "description": "Number of days to forecast ahead (default: 3, max recommended: 5)",
+                        "default": 3
+                    }
+                }
+            }
+        )
+    ]
+
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    """Handle tool calls."""
+    try:
+        if name == "get_weather_forecast":
+            latitude = arguments.get("latitude", 55.6761)
+            longitude = arguments.get("longitude", 12.5683)
+            days_ahead = arguments.get("days_ahead", 3)
+            
+            result = get_weather_forecast_impl(latitude, longitude, days_ahead)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        elif name == "get_weather_forecast_copenhagen":
+            days_ahead = arguments.get("days_ahead", 3)
+            
+            result = get_weather_forecast_impl(55.6761, 12.5683, days_ahead)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        else:
+            return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
     
-    Args:
-        days_ahead: Number of days to forecast ahead (default: 3, max recommended: 5)
-    
-    Returns:
-        Dictionary containing forecast data for Copenhagen
-    """
-    return get_weather_forecast(latitude=55.6761, longitude=12.5683, days_ahead=days_ahead)
+    except Exception as e:
+        import traceback
+        error_msg = f"Error calling tool {name}: {str(e)}\n{traceback.format_exc()}"
+        return [TextContent(type="text", text=json.dumps({"error": error_msg}))]
 
 
 
-if __name__ == "__main__":
-    import sys
-    import os
-    
-    # SSE transport only - for HTTP/SSE access
-    # Railway sets PORT environment variable automatically
-    # Use: python main.py  (default: 0.0.0.0:8000 or Railway PORT)
-    # Use: python main.py --host 127.0.0.1 --port 9000  (custom host/port)
+async def main():
+    """Run the MCP server with SSE transport."""
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.routing import Route, Mount
+    from starlette.requests import Request
+    from starlette.responses import Response
+    import uvicorn
     
     host = "0.0.0.0"
-    # Railway automatically sets PORT environment variable
     port = int(os.environ.get("PORT", 8000))
     
-    # Parse optional host and port arguments (only if not set by environment)
+    # Parse optional host and port arguments
     if "--host" in sys.argv:
         host_idx = sys.argv.index("--host")
         if host_idx + 1 < len(sys.argv):
@@ -287,12 +348,73 @@ if __name__ == "__main__":
     print(f"Access at: http://localhost:{port}")
     print("(Use 'python main_stdio.py' for stdio transport)")
     
-    # Debug: Print registered tools (helps diagnose Railway issues)
+    # Debug: Print registered tools
+    tool_names = []
     try:
-        if hasattr(mcp, '_tools'):
-            tools = list(mcp._tools.keys())
-            print(f"Registered tools: {tools}")
+        tools_list = await list_tools()
+        tool_names = [tool.name for tool in tools_list]
+        print(f"Registered tools: {tool_names}")
     except Exception as e:
         print(f"Warning: Could not list tools: {e}")
     
-    mcp.run(transport="sse", host=host, port=port)
+    # Create SSE transport
+    sse_transport = SseServerTransport("/messages/")
+    
+    # Define root/health check handler
+    async def handle_root(request: Request):
+        from starlette.responses import JSONResponse
+        return JSONResponse({
+            "name": "weather",
+            "version": "1.0.0",
+            "transport": "sse",
+            "endpoints": {
+                "sse": "/sse",
+                "messages": "/messages/"
+            },
+            "tools": tool_names
+        })
+    
+    # Define SSE handler
+    async def handle_sse(request: Request):
+        # Note: Must maintain SSE stream - cannot return JSONResponse on error
+        # Errors should be handled by the SSE transport or logged
+        async with sse_transport.connect_sse(
+            request.scope, request.receive, request._send
+        ) as (read_stream, write_stream):
+            await server.run(
+                read_stream, write_stream, server.create_initialization_options()
+            )
+        # Return empty response after SSE connection closes
+        return Response()
+    
+    # Create Starlette app with routes
+    app = Starlette(
+        routes=[
+            Route("/", endpoint=handle_root, methods=["GET"]),
+            Route("/sse", endpoint=handle_sse, methods=["GET"]),
+            Mount("/messages/", app=sse_transport.handle_post_message),
+        ]
+    )
+    
+    # Run with uvicorn
+    config = uvicorn.Config(
+        app, 
+        host=host, 
+        port=port, 
+        log_level="info",
+        access_log=False  # Reduce log noise
+    )
+    server_instance = uvicorn.Server(config)
+    await server_instance.serve()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nServer stopped by user")
+    except Exception as e:
+        print(f"\nERROR: Server failed to start: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
