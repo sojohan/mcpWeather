@@ -270,36 +270,7 @@ def get_weather_forecast_copenhagen(days_ahead: int = 3) -> dict:
     """
     return get_weather_forecast(latitude=55.6761, longitude=12.5683, days_ahead=days_ahead)
 
-def _check_bearer_token(request: Request) -> None:
-    """
-    Optional auth: set MCP_BEARER_TOKEN in Railway variables.
-    If unset, the server runs without auth (not recommended for public deployments).
-    """
-    expected = os.getenv("MCP_BEARER_TOKEN")
-    if not expected:
-        return
 
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {expected}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
-def _validate_origin(request: Request) -> None:
-    """
-    The MCP Streamable HTTP spec recommends validating Origin to mitigate DNS rebinding.
-    Implement a basic allowlist via ALLOWED_ORIGINS (comma-separated), if desired.
-    """
-    allowed = os.getenv("ALLOWED_ORIGINS")
-    if not allowed:
-        return
-
-    origin = request.headers.get("origin")
-    if origin is None:
-        return
-
-    allowlist = {o.strip() for o in allowed.split(",") if o.strip()}
-    if origin not in allowlist:
-        raise HTTPException(status_code=403, detail="Origin not allowed")
 
 
 @contextlib.asynccontextmanager
@@ -309,57 +280,19 @@ async def lifespan(app: FastAPI):
         yield
 
 
-app = FastAPI(lifespan=lifespan)
-
-
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
-@app.get("/")
-def root():
-    """Root endpoint with server info."""
-    # Try to get tool names from FastMCP
-    tool_names = []
-    try:
-        if hasattr(mcp, "_tool_manager"):
-            tool_names = list(mcp._tool_manager._tools.keys()) if hasattr(mcp._tool_manager, "_tools") else []
-        elif hasattr(mcp, "list_tools"):
-            # Try to call list_tools synchronously (won't work but shows intent)
-            tool_names = ["get_weather_forecast", "get_weather_forecast_copenhagen"]
-    except:
-        pass
-    
-    # Fallback to known tools if we can't access them
-    if not tool_names:
-        tool_names = ["get_weather_forecast", "get_weather_forecast_copenhagen"]
-    
-    return {
-        "name": "weather",
-        "version": "1.0.0",
-        "transport": "streamable_http",
-        "endpoint": "/mcp",
-        "tools": tool_names
-    }
-
-
-@app.middleware("http")
-async def security_middleware(request: Request, call_next):
-    # Only enforce MCP-specific checks on the MCP endpoint
-    if request.url.path.startswith("/mcp"):
-        _validate_origin(request)
-        _check_bearer_token(request)
-    return await call_next(request)
 
 
 
 
 
 if __name__ == "__main__":
+
+    # SSE transport
      host = "0.0.0.0"
      port = int(os.environ.get("PORT", 8000))
      mcp.run(transport="sse", host=host, port=port)
+
+     #mcp.run
 #     
 #     # Parse optional host and port arguments
 #     if "--host" in sys.argv:
