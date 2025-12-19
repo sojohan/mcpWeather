@@ -1,8 +1,7 @@
 requests>=2.31.0
-mcp>=1.0.0
+fastmcp>=2.2.10
+fastapi>=0.104.0
 uvicorn>=0.24.0
-starlette>=0.27.0
-sse-starlette>=1.6.5
 langchain-openai>=0.1.0
 python-dotenv>=1.0.0
 httpx>=0.24.0
