@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 # Initialize MCP server with FastMCP
 mcp = FastMCP(
-    "weather", host="0.0.0.0", port=port
+    "weather", host="0.0.0.0", port=8000
 )
 
 # API endpoint
@@ -306,3 +306,4 @@ if __name__ == "__main__":
 #     print(f"Registered tools: {tool_names}")
 #     
 #     uvicorn.run(app, host=host, port=port, log_level="info")
+
