@@ -6,13 +6,12 @@ import contextlib
 import sys
 import os
 from fastapi import FastAPI, HTTPException, Request
-import uvicorn
+
 
 # Initialize MCP server with FastMCP
 mcp = FastMCP(
     "weather",
-    # Recommended for typical HTTP deployments (no per-client server process)
-    stateless_http=True,
+
     # Makes certain clients happier by returning JSON when possible
     json_response=True,
 )
