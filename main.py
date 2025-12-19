@@ -2,18 +2,13 @@ import requests
 from datetime import datetime, timedelta, timezone
 from mcp.server.fastmcp import FastMCP
 import json
-import contextlib
-import sys
-import os
+
 from fastapi import FastAPI, HTTPException, Request
 
 
 # Initialize MCP server with FastMCP
 mcp = FastMCP(
-    "weather",
-
-    # Makes certain clients happier by returning JSON when possible
-    json_response=True,
+    "weather", host="0.0.0.0", port=port
 )
 
 # API endpoint
@@ -279,9 +274,8 @@ def get_weather_forecast_copenhagen(days_ahead: int = 3) -> dict:
 
 if __name__ == "__main__":
 
-    # SSE transport
-    port = int(os.environ.get("PORT", 8000))
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+
+    mcp.run(transport="streamable-http")
 
      #mcp.run
 #     
@@ -312,4 +306,3 @@ if __name__ == "__main__":
 #     print(f"Registered tools: {tool_names}")
 #     
 #     uvicorn.run(app, host=host, port=port, log_level="info")
-
