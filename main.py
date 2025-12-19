@@ -281,7 +281,7 @@ if __name__ == "__main__":
 
     # SSE transport
     port = int(os.environ.get("PORT", 8000))
-    mcp.run(transport="sse", host="0.0.0.0", port=port)
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
 
      #mcp.run
 #     
@@ -312,3 +312,4 @@ if __name__ == "__main__":
 #     print(f"Registered tools: {tool_names}")
 #     
 #     uvicorn.run(app, host=host, port=port, log_level="info")
+
